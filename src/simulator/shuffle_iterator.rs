@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::random::RandomGenerator;
 
-/// A circular iterator the shuffles the elements at the beginning of each iteration.
+/// A circular iterator that shuffles the elements at the beginning of each iteration.
 pub(crate) struct ShuffleIterator<T> {
     index: usize,
     items: Vec<T>,
