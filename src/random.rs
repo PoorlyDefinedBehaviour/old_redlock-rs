@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-pub trait RandomGenerator: std::fmt::Debug + Send {
+pub trait RandomGenerator: std::fmt::Debug + Send + Sync {
     fn gen_u64(&self) -> u64;
 }
 

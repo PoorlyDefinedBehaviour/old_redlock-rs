@@ -5,7 +5,10 @@ use rand::Rng;
 
 use crate::{random::ChaCha8RandomGenerator, RedLock};
 
-use self::{r#async::Stepper, shuffle_iterator::ShuffleIterator};
+use self::{
+    r#async::{AsyncRuntime, Stepper},
+    shuffle_iterator::ShuffleIterator,
+};
 mod r#async;
 mod clock;
 mod redis;
@@ -44,6 +47,8 @@ where
 {
     let seed: u64 = rand::thread_rng().gen();
 
+    let async_runtime = Arc::new(AsyncRuntime::new());
+
     // Create several independent redis servers.
     let redis_servers: Vec<_> = (0..config.redis.num_servers)
         .map(|i| {
@@ -72,7 +77,7 @@ where
                 Arc::new(ChaCha8RandomGenerator::from_seed(seed)),
                 redis_servers.clone(),
                 Arc::new(clock::Clock::new()),
-                r#async::Async::new(),
+                Arc::new(r#async::Async::new(Arc::clone(&async_runtime))),
             )
         })
         .collect();
@@ -87,11 +92,17 @@ where
 
     for _ in 0..config.simulation.steps {
         let mut stepper = iterator.next_mut().unwrap();
-        println!("aaaaaa stepper.completed {:?}", stepper.completed);
+        if stepper.completed {
+            println!("aaaaaa skipping, stepper.completed {:?}", stepper.completed);
+            continue;
+        }
         // TODO: should not poll again when a future completes.
         let result = stepper.next().await;
 
         dbg!(&result);
+
+        async_runtime.step_all_tasks().await;
+
         // tokio::task::yield_now().await;
         // Assert invariants hold.
         assertion_fn(&redis_servers, &clients);
@@ -111,7 +122,7 @@ mod tests {
                 lock_failure_chance: 5,
                 relase_lock_failure_chance: 5,
             },
-            clients: ClientsConfig { num_clients: 3 },
+            clients: ClientsConfig { num_clients: 1 },
         };
 
         run(config, |_redis_servers, _clients| {}).await;

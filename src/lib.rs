@@ -24,7 +24,7 @@ where
     /// Can be used to get the current time.
     clock: Arc<dyn Clock>,
     /// Contains functions to deal with async code.
-    r#async: Async,
+    r#async: Arc<Async>,
 }
 
 #[derive(Debug)]
@@ -73,7 +73,7 @@ where
         random: Arc<dyn RandomGenerator>,
         redis_servers: Vec<Arc<dyn Redis>>,
         clock: Arc<dyn Clock>,
-        r#async: Async,
+        r#async: Arc<Async>,
     ) -> Self {
         assert!(
             config.lock_ttl > config.min_lock_validity,
@@ -107,6 +107,7 @@ where
         loop {
             // If the lock has been acquired in the majority of servers, just return the lock.
             if self.lock(&lock).await {
+                println!("aaaaaa locked",);
                 return lock;
             }
 
@@ -129,38 +130,47 @@ where
     async fn lock(&self, lock: &Lock) -> bool {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(self.redis_servers.len());
 
-        let _task_handle = tokio::spawn({
-            let futures = self.redis_servers.iter().cloned().map(|redis_server| {
-                let sender = sender.clone();
-                let lock = lock.clone();
-                let lock_ttl = self.config.lock_ttl;
+        let mut futures = Vec::with_capacity(self.redis_servers.len());
 
-                self.r#async
-                    .clone()
-                    .timeout(self.config.acquire_lock_timeout, async move {
-                        if let Err(err) = redis_server.lock(&lock, lock_ttl).await {
-                            error!(?err, "error calling set_nx_px");
-                        };
+        for redis_server in self.redis_servers.iter() {
+            let redis_server = redis_server.clone();
+            let sender = sender.clone();
+            let lock = lock.clone();
+            let lock_ttl = self.config.lock_ttl;
+            let r#async = Arc::clone(&self.r#async);
 
-                        if let Err(err) = sender.send(true).await {
-                            error!(
+            futures.push(
+                r#async.timeout(self.config.acquire_lock_timeout, async move {
+                    if let Err(err) = redis_server.lock(&lock, lock_ttl).await {
+                        println!("aaaaaa redis_server.lock() returned Err",);
+                        error!(?err, "error calling set_nx_px");
+                    };
+
+                    if let Err(err) = sender.send(true).await {
+                        error!(
                             ?err,
                             redis_server = redis_server.address(),
                             "acquire lock on redis server but got error sending signal to channel"
                         );
-                        };
-                    })
-            });
+                    };
+                }),
+            );
+        }
 
-            futures::future::join_all(futures)
-        });
+        println!("aaaaaa will call async.spawn()",);
+        self.r#async
+            .spawn(async {
+                futures::future::join_all(futures).await;
+            })
+            .await;
 
         let start = self.clock.now();
 
+        println!("aaaaaa will call receiver.recv()",);
         let mut locks_acquired = 0;
         while receiver.recv().await.is_some() {
+            println!("aaaaaa received",);
             locks_acquired += 1;
-            println!("aaaaaa locks_acquired {:?}", locks_acquired);
 
             if locks_acquired >= self.majority() {
                 let time_passed = self.clock.now() - start;
@@ -169,13 +179,13 @@ where
                     - time_passed as i64
                     - self.config.clock_drift.as_millis() as i64;
 
-                dbg!(&validity_time);
-
                 // If we took too long to acquire the lock on
                 // the majority of servers, the lock is not valid.
                 return validity_time >= self.config.min_lock_validity.as_millis() as i64;
             }
         }
+
+        println!("aaaaaa lock() returning false",);
 
         false
     }
