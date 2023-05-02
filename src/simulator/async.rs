@@ -36,7 +36,7 @@ impl AsyncRuntime {
 
         let mut completed_futures = Vec::new();
 
-        for (i, mut stepper) in futures.iter_mut().enumerate() {
+        for (i, stepper) in futures.iter_mut().enumerate() {
             // TODO: don't poll completed futures;
             let stepper_output = stepper.next().await;
             if let Some(StepperOutput::Ready(_value)) = stepper_output {
@@ -92,17 +92,17 @@ impl crate::r#async::Async for Async {
 
 pub(crate) struct Stepper<F>
 where
-    F: Future + Unpin,
+    F: Future,
 {
     pub(crate) completed: bool,
     pub(crate) future: F,
 }
 
-impl<F> Stepper<F>
+impl<F> Stepper<Pin<Box<F>>>
 where
-    F: Future + Unpin,
+    F: Future + ?Sized,
 {
-    pub(crate) fn new(future: F) -> Self {
+    pub(crate) fn new(future: Pin<Box<F>>) -> Self {
         Self {
             completed: false,
             future,
@@ -116,7 +116,7 @@ pub(crate) enum StepperOutput<T> {
     NotReady,
 }
 
-impl<F> Stream for &mut Stepper<F>
+impl<F> Stream for Stepper<F>
 where
     F: Future + Unpin,
 {

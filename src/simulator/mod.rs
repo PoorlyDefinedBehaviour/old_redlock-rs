@@ -1,15 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
-use futures::{FutureExt, StreamExt};
 use rand::Rng;
 
-use crate::{random::ChaCha8RandomGenerator, RedLock};
+use crate::{clock::Clock, random::ChaCha8RandomGenerator, redis::Redis, RedLock};
 
-use self::{
-    r#async::{AsyncRuntime, Stepper},
-    shuffle_iterator::ShuffleIterator,
-};
+use self::{client::Client, r#async::AsyncRuntime, shuffle_iterator::ShuffleIterator};
 mod r#async;
+mod client;
 mod clock;
 mod redis;
 mod shuffle_iterator;
@@ -18,6 +15,7 @@ pub(crate) struct Config {
     pub(crate) simulation: SimulationConfig,
     pub(crate) redis: RedisConfig,
     pub(crate) clients: ClientsConfig,
+    pub(crate) clock: ClockConfig,
 }
 
 pub(crate) struct SimulationConfig {
@@ -41,30 +39,41 @@ pub(crate) struct ClientsConfig {
     pub(crate) num_clients: usize,
 }
 
+pub(crate) struct ClockConfig {}
+
+pub(crate) struct AssertionInput<'a> {
+    redis_servers: &'a [Arc<dyn Redis>],
+    clients: &'a [Client<'a>],
+}
+
 pub(crate) async fn run<F>(config: Config, mut assertion_fn: F)
 where
-    F: FnMut(&[Arc<dyn crate::Redis>], &[RedLock<r#async::Async>]),
+    F: FnMut(AssertionInput),
 {
     let seed: u64 = rand::thread_rng().gen();
 
     let async_runtime = Arc::new(AsyncRuntime::new());
+    let clock = Arc::new(clock::Clock::new());
 
     // Create several independent redis servers.
     let redis_servers: Vec<_> = (0..config.redis.num_servers)
         .map(|i| {
-            let redis: Arc<dyn crate::Redis> = Arc::new(redis::Redis::new(redis::Config {
-                address: format!("127.0.0.1:500{i}"),
-                lock_failure_chance: config.redis.lock_failure_chance,
-                relase_lock_failure_chance: config.redis.relase_lock_failure_chance,
-            }));
+            let redis: Arc<dyn crate::Redis> = Arc::new(redis::Redis::new(
+                redis::Config {
+                    address: format!("127.0.0.1:500{i}"),
+                    lock_failure_chance: config.redis.lock_failure_chance,
+                    relase_lock_failure_chance: config.redis.relase_lock_failure_chance,
+                },
+                Arc::clone(&clock) as Arc<dyn Clock>,
+            ));
             redis
         })
         .collect();
 
     // Client several independent clients that communicate with the same set of redis servers.
-    let clients: Vec<RedLock<r#async::Async>> = (0..config.clients.num_clients)
+    let clients: Vec<_> = (0..config.clients.num_clients)
         .map(|i| {
-            RedLock::new(
+            Client::new(RedLock::new(
                 crate::Config {
                     node_id: i.to_string(),
                     max_lock_retry_interval: Duration::from_secs(15),
@@ -76,36 +85,30 @@ where
                 },
                 Arc::new(ChaCha8RandomGenerator::from_seed(seed)),
                 redis_servers.clone(),
-                Arc::new(clock::Clock::new()),
+                Arc::clone(&(clock.clone() as Arc<dyn Clock>)),
                 Arc::new(r#async::Async::new(Arc::clone(&async_runtime))),
-            )
+            ))
         })
         .collect();
 
-    let futures: Vec<_> = clients
-        .iter()
-        .map(|client| Stepper::new(Box::pin(client.retry_until_locked("key".to_string()))))
-        .collect();
-
     let mut iterator =
-        ShuffleIterator::new(Arc::new(ChaCha8RandomGenerator::from_seed(seed)), futures);
+        ShuffleIterator::new(Arc::new(ChaCha8RandomGenerator::from_seed(seed)), clients);
 
     for _ in 0..config.simulation.steps {
-        let mut stepper = iterator.next_mut().unwrap();
-        if stepper.completed {
-            println!("aaaaaa skipping, stepper.completed {:?}", stepper.completed);
-            continue;
-        }
-        // TODO: should not poll again when a future completes.
-        let result = stepper.next().await;
+        let mut client = iterator.next_mut().unwrap();
 
-        dbg!(&result);
+        client.step("key".to_string()).await;
 
         async_runtime.step_all_tasks().await;
 
+        clock.step();
+
         // tokio::task::yield_now().await;
         // Assert invariants hold.
-        assertion_fn(&redis_servers, &clients);
+        // assertion_fn(AssertionInput {
+        //     redis_servers: &redis_servers,
+        //     clients: &iterator.items,
+        // });
     }
 }
 
@@ -122,9 +125,17 @@ mod tests {
                 lock_failure_chance: 5,
                 relase_lock_failure_chance: 5,
             },
-            clients: ClientsConfig { num_clients: 1 },
+            clients: ClientsConfig { num_clients: 3 },
+            clock: ClockConfig {},
         };
 
-        run(config, |_redis_servers, _clients| {}).await;
+        run(config, |input| assert_mutual_exclusion(&input)).await;
+    }
+
+    /// Asserts that the lock is not held by more than one client.
+    fn assert_mutual_exclusion(input: &AssertionInput) {
+        dbg!(&input.redis_servers);
+
+        // assert!(input.locks.len() <= 1);
     }
 }

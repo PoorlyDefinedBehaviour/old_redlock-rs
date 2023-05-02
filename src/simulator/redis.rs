@@ -1,19 +1,21 @@
-//! Contains a fake Redis that can be used for simulations.
-
 use std::{
     collections::HashMap,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
+use tracing::error;
 
-use crate::{redis, Lock};
+use crate::{clock::Clock, redis, Lock};
 
+/// Fake Redis that can be used in simulations.
 #[derive(Debug)]
 pub(crate) struct Redis {
     /// The config of this fake redis.
     config: Config,
+    clock: Arc<dyn Clock>,
     /// The key value pairs.
     entries: Mutex<HashMap<String, Entry>>,
 }
@@ -32,15 +34,23 @@ pub(crate) struct Config {
 struct Entry {
     value: String,
     ttl: Duration,
-    inserted_at: Instant,
+    inserted_at: u64,
 }
 
 impl Redis {
-    pub(crate) fn new(config: Config) -> Self {
+    pub(crate) fn new(config: Config, clock: Arc<dyn Clock>) -> Self {
         Self {
             config,
+            clock,
             entries: Mutex::new(HashMap::new()),
         }
+    }
+
+    async fn remove_expired_entries(&self) {
+        let mut entries = self.entries.lock().await;
+        entries.retain(|_key, value| {
+            self.clock.now() - value.inserted_at < value.ttl.as_millis() as u64
+        });
     }
 }
 
@@ -58,7 +68,7 @@ impl redis::Redis for Redis {
             Entry {
                 value: lock.value(),
                 ttl,
-                inserted_at: Instant::now(),
+                inserted_at: self.clock.now(),
             },
         );
 
@@ -79,5 +89,19 @@ impl redis::Redis for Redis {
 
     fn address(&self) -> &str {
         &self.config.address
+    }
+}
+
+/// Calls a method to remove expired entries from the fake redis periodically.
+async fn cleaner(redis: Weak<Redis>) {
+    loop {
+        match redis.upgrade() {
+            None => {
+                error!("cleaner: redis Arc has been dropped, will exit cleaner loop");
+            }
+            Some(redis) => {
+                redis.remove_expired_entries().await;
+            }
+        }
     }
 }

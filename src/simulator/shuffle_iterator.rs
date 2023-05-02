@@ -5,7 +5,7 @@ use crate::random::RandomGenerator;
 /// A circular iterator that shuffles the elements at the beginning of each iteration.
 pub(crate) struct ShuffleIterator<T> {
     index: usize,
-    items: Vec<T>,
+    pub(crate) items: Vec<T>,
     random: Arc<dyn RandomGenerator>,
 }
 
