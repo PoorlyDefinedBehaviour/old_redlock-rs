@@ -43,12 +43,12 @@ pub(crate) struct ClockConfig {}
 
 pub(crate) struct AssertionInput<'a> {
     redis_servers: &'a [Arc<dyn Redis>],
-    clients: &'a [Client<'a>],
+    clients: &'a [Arc<Client<'a>>],
 }
 
-pub(crate) async fn run<F>(config: Config, mut assertion_fn: F)
+pub(crate) async fn run<F>(config: Config, assertion_fn: F)
 where
-    F: FnMut(AssertionInput),
+    F: for<'a> Fn(AssertionInput<'a>),
 {
     let seed: u64 = rand::thread_rng().gen();
 
@@ -73,7 +73,7 @@ where
     // Client several independent clients that communicate with the same set of redis servers.
     let clients: Vec<_> = (0..config.clients.num_clients)
         .map(|i| {
-            Client::new(RedLock::new(
+            Arc::new(Client::new(RedLock::new(
                 crate::Config {
                     node_id: i.to_string(),
                     max_lock_retry_interval: Duration::from_secs(15),
@@ -87,17 +87,21 @@ where
                 redis_servers.clone(),
                 Arc::clone(&(clock.clone() as Arc<dyn Clock>)),
                 Arc::new(r#async::Async::new(Arc::clone(&async_runtime))),
-            ))
+            )))
         })
         .collect();
 
     let mut iterator =
         ShuffleIterator::new(Arc::new(ChaCha8RandomGenerator::from_seed(seed)), clients);
 
+    assertion_fn(AssertionInput {
+        redis_servers: &redis_servers,
+        clients: &iterator.items,
+    });
     for _ in 0..config.simulation.steps {
-        let mut client = iterator.next_mut().unwrap();
+        // let client = iterator.next_cloned().unwrap();
 
-        client.step("key".to_string()).await;
+        // client.step("key".to_string()).await;
 
         async_runtime.step_all_tasks().await;
 
@@ -105,10 +109,6 @@ where
 
         // tokio::task::yield_now().await;
         // Assert invariants hold.
-        // assertion_fn(AssertionInput {
-        //     redis_servers: &redis_servers,
-        //     clients: &iterator.items,
-        // });
     }
 }
 
@@ -129,13 +129,23 @@ mod tests {
             clock: ClockConfig {},
         };
 
-        run(config, |input| assert_mutual_exclusion(&input)).await;
+        run(config, assert_mutual_exclusion).await;
     }
 
     /// Asserts that the lock is not held by more than one client.
-    fn assert_mutual_exclusion(input: &AssertionInput) {
+    fn assert_mutual_exclusion(input: AssertionInput) {
         dbg!(&input.redis_servers);
+        // let clients_with_locks_acquired = futures::future::join_all(
+        //     input
+        //         .clients
+        //         .iter()
+        //         .map(|client| client.has_acquired_lock()),
+        // )
+        // .await
+        // .into_iter()
+        // .filter(|acquired| *acquired)
+        // .count();
 
-        // assert!(input.locks.len() <= 1);
+        // assert!(clients_with_locks_acquired <= 1);
     }
 }

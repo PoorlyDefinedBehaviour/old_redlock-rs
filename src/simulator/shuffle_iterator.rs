@@ -18,7 +18,10 @@ impl<T> ShuffleIterator<T> {
         }
     }
 
-    pub(crate) fn next_mut(&mut self) -> Option<&mut T> {
+    pub(crate) fn next_cloned(&self) -> Option<T>
+    where
+        T: Clone,
+    {
         let index = self.index;
 
         self.index = (1 + self.index) % self.items.len();
@@ -27,7 +30,7 @@ impl<T> ShuffleIterator<T> {
             shuffle(self.random.as_ref(), &mut self.items);
         }
 
-        self.items.get_mut(index)
+        self.items.get(index).cloned()
     }
 }
 

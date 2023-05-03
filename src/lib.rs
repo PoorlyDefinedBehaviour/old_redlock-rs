@@ -97,7 +97,7 @@ where
         self.redis_servers.len() / 2 + 1
     }
 
-    pub async fn retry_until_locked(&mut self, key: String) -> Lock {
+    pub async fn retry_until_locked(&self, key: String) -> Lock {
         let lock = Lock {
             key,
             node_id: self.config.node_id.clone(),
