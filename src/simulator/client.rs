@@ -1,20 +1,33 @@
 use std::{pin::Pin, sync::Arc};
 
 use futures::{Future, StreamExt};
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
-use crate::{Lock, RedLock};
+use crate::{clock::Clock, random::RandomGenerator, Lock, RedLock};
 
-use super::r#async::{Async, Stepper, StepperOutput};
+use super::{
+    clock,
+    r#async::{Async, Stepper, StepperOutput},
+};
 
-/// Calls `RedLock` methods. It exists to aid in simulations.
-
-pub(crate) struct Client<'a> {
-    redlock: RedLock<Async>,
-    state: Mutex<State<'a>>,
+#[derive(Debug)]
+pub(crate) struct Config {
+    /// The client id.
+    pub(crate) id: usize,
+    pub(crate) lock_release_chance: f64,
 }
 
-enum State<'a> {
+/// Calls `RedLock` methods. It exists to aid in simulations.
+#[derive(Debug)]
+pub(crate) struct Client<'a> {
+    pub(crate) config: Config,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) redlock: RedLock<Async>,
+    pub(crate) random: Arc<dyn RandomGenerator>,
+    pub(crate) state: Mutex<State<'a>>,
+}
+
+pub(crate) enum State<'a> {
     /// Client has just been instantiated.
     Initial,
     /// Client is trying to acquire a lock.
@@ -29,22 +42,58 @@ enum State<'a> {
     },
 }
 
+impl<'a> std::fmt::Debug for State<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Initial => write!(f, "Initial"),
+            Self::AcquireLock { .. } => f
+                .debug_struct("AcquireLock")
+                .field("stepper", &"Stepper Future")
+                .finish(),
+            Self::LockAcquired { lock } => {
+                f.debug_struct("LockAcquired").field("lock", lock).finish()
+            }
+        }
+    }
+}
+
 impl<'a> Client<'a> {
-    pub(crate) fn new(redlock: RedLock<Async>) -> Self {
+    pub(crate) fn new(
+        config: Config,
+        clock: Arc<clock::Clock>,
+        redlock: RedLock<Async>,
+        random: Arc<dyn RandomGenerator>,
+    ) -> Self {
         Self {
+            config,
+            clock,
             redlock,
+            random,
             state: Mutex::new(State::Initial),
         }
     }
 
-    pub(crate) async fn has_acquired_lock(&self) -> bool {
-        let state = self.state.lock().await;
-        // TODO: check if lock is expired.
-        matches!(*state, State::LockAcquired { .. })
+    /// Returns true when the client holds a non expired lock.
+    pub(crate) fn has_acquired_lock(&self) -> bool {
+        let state = self.state.lock().unwrap();
+
+        match &*state {
+            State::Initial | State::AcquireLock { .. } => false,
+            State::LockAcquired { lock } => !lock.is_expired(self.clock.now()),
+        }
+    }
+
+    /// Returns the lock being held by this client if there's one.
+    pub(crate) fn get_lock(&self) -> Option<Lock> {
+        let state = self.state.lock().unwrap();
+        match &*state {
+            State::Initial | State::AcquireLock { .. } => None,
+            State::LockAcquired { lock } => Some(lock.clone()),
+        }
     }
 
     pub(crate) async fn step(self: Arc<Self>, key: String) {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock().unwrap();
 
         // We know that the client will exist during the whole simulation
         // and we need to store a future that borrows itself.
@@ -52,6 +101,10 @@ impl<'a> Client<'a> {
 
         match &mut *state {
             State::Initial => {
+                println!(
+                    "aaaaaa client={} is in the initial state, will create future",
+                    self.config.id
+                );
                 let future: Pin<Box<dyn Future<Output = Lock> + 'a>> =
                     Box::pin(unsafe { (*s).redlock.retry_until_locked(key) });
 
@@ -61,11 +114,25 @@ impl<'a> Client<'a> {
             }
             State::AcquireLock { ref mut stepper } => {
                 if let Some(StepperOutput::Ready(lock)) = stepper.next().await {
+                    println!(
+                        "aaaaaa client={} is in the acquire lock state, acquired lock",
+                        self.config.id
+                    );
                     *state = State::LockAcquired { lock };
                 }
             }
             State::LockAcquired { lock } => {
-                // TODO: chance of unlocking
+                if self.random.gen_bool(self.config.lock_release_chance) {
+                    println!(
+                        "aaaaaa client={} is in the lock acquired state and will release the lock",
+                        self.config.id
+                    );
+
+                    if self.redlock.release(lock).await {
+                        println!("aaaaaa lock released lock={:?}", lock);
+                        *state = State::Initial;
+                    }
+                }
             }
         }
     }

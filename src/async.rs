@@ -1,6 +1,6 @@
 //! Contains functions to run code async.
 
-use std::{sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::Future;
@@ -8,7 +8,7 @@ use futures::Future;
 #[async_trait]
 pub trait Async: Send + Sync {
     /// Returns a future that will resolve after `duration`.
-    async fn sleep(&self, duration: Duration);
+    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
     /// Returns an error if the future does not complete before `t`.
     async fn timeout<F>(

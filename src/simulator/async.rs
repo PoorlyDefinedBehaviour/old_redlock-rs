@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use futures::{Stream, StreamExt};
+use std::cmp::Ordering;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -9,14 +10,30 @@ use std::task::Poll;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+use crate::clock::Clock;
+use crate::random::RandomGenerator;
+
+use super::clock;
+use super::shuffle_iterator::ShuffleIterator;
+
 pub(crate) struct AsyncRuntime {
+    random: Arc<dyn RandomGenerator>,
     /// Futures that the runtime needs to execute.
     futures: Mutex<Vec<Stepper<Pin<Box<dyn Future<Output = ()> + Send>>>>>,
 }
 
+impl std::fmt::Debug for AsyncRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncRuntime")
+            .field("futures", &"List of futures")
+            .finish()
+    }
+}
+
 impl AsyncRuntime {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(random: Arc<dyn RandomGenerator>) -> Self {
         Self {
+            random,
             futures: Mutex::new(Vec::new()),
         }
     }
@@ -32,11 +49,14 @@ impl AsyncRuntime {
     /// Polls every spawned future once.
     pub(crate) async fn step_all_tasks(&self) {
         let mut futures = self.futures.lock().await;
-        println!("aaaaaa will poll {} futures", futures.len());
+        let num_futures = futures.len();
+
+        let mut iterator = ShuffleIterator::new(Arc::clone(&self.random), &mut futures);
 
         let mut completed_futures = Vec::new();
 
-        for (i, stepper) in futures.iter_mut().enumerate() {
+        for i in 0..num_futures {
+            let stepper = iterator.next_mut().unwrap();
             // TODO: don't poll completed futures;
             let stepper_output = stepper.next().await;
             if let Some(StepperOutput::Ready(_value)) = stepper_output {
@@ -45,6 +65,14 @@ impl AsyncRuntime {
         }
 
         // This is slow but it is fine for testing.
+        // Order from greatest to smallest.
+        completed_futures.sort_by(|a, b| {
+            if a > b {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
         for i in completed_futures {
             futures.remove(i);
         }
@@ -52,20 +80,47 @@ impl AsyncRuntime {
 }
 
 /// Provides async utilities that can be used during the simulation.
+#[derive(Debug)]
 pub(crate) struct Async {
+    clock: Arc<clock::Clock>,
     runtime: Arc<AsyncRuntime>,
 }
 
 impl Async {
-    pub(crate) fn new(runtime: Arc<AsyncRuntime>) -> Self {
-        Self { runtime }
+    pub(crate) fn new(clock: Arc<clock::Clock>, runtime: Arc<AsyncRuntime>) -> Self {
+        Self { clock, runtime }
+    }
+}
+
+pub(crate) struct Sleep {
+    /// When this Sleep was created.
+    created_at: u64,
+    /// How long to sleep for.
+    duration: Duration,
+    /// Can be used to get the time.
+    clock: Arc<clock::Clock>,
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        if self.clock.now() - self.created_at > self.duration.as_millis() as u64 {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 
 #[async_trait]
 impl crate::r#async::Async for Async {
-    async fn sleep(&self, _duration: Duration) {
-        // Resolve immediately.
+    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(Sleep {
+            clock: Arc::clone(&self.clock),
+            created_at: self.clock.now(),
+            duration,
+        })
     }
 
     async fn timeout<F>(
@@ -85,7 +140,6 @@ impl crate::r#async::Async for Async {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        println!("aaaaaa simulator spawn called",);
         self.runtime.add_future(future).await;
     }
 }

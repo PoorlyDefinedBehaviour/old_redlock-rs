@@ -3,14 +3,14 @@ use std::sync::Arc;
 use crate::random::RandomGenerator;
 
 /// A circular iterator that shuffles the elements at the beginning of each iteration.
-pub(crate) struct ShuffleIterator<T> {
-    index: usize,
-    pub(crate) items: Vec<T>,
+pub(crate) struct ShuffleIterator<'a, T> {
+    pub(crate) index: usize,
+    pub(crate) items: &'a mut [T],
     random: Arc<dyn RandomGenerator>,
 }
 
-impl<T> ShuffleIterator<T> {
-    pub(crate) fn new(random: Arc<dyn RandomGenerator>, items: Vec<T>) -> Self {
+impl<'a, T> ShuffleIterator<'a, T> {
+    pub(crate) fn new(random: Arc<dyn RandomGenerator>, items: &'a mut [T]) -> Self {
         Self {
             index: 0,
             items,
@@ -18,19 +18,16 @@ impl<T> ShuffleIterator<T> {
         }
     }
 
-    pub(crate) fn next_cloned(&self) -> Option<T>
-    where
-        T: Clone,
-    {
+    pub(crate) fn next_mut(&mut self) -> Option<&mut T> {
         let index = self.index;
 
         self.index = (1 + self.index) % self.items.len();
 
         if self.index == 0 {
-            shuffle(self.random.as_ref(), &mut self.items);
+            shuffle(self.random.as_ref(), self.items);
         }
 
-        self.items.get(index).cloned()
+        self.items.get_mut(index)
     }
 }
 

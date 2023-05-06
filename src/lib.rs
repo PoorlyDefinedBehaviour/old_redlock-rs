@@ -55,12 +55,21 @@ pub struct Lock {
     node_id: String,
     /// A random number.
     random_number: u64,
+    /// The lock ttl.
+    ttl: u64,
+    /// When the lock was acquired.
+    acquired_at: u64,
 }
 
 impl Lock {
     /// Returns a value that can be used to set as the value of an acquired locked.
     fn value(&self) -> String {
         format!("{}:{}", self.node_id, self.random_number)
+    }
+
+    /// Returns `true` when the lock is expired.
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time - self.acquired_at > self.ttl
     }
 }
 
@@ -98,16 +107,18 @@ where
     }
 
     pub async fn retry_until_locked(&self, key: String) -> Lock {
-        let lock = Lock {
+        let mut lock = Lock {
             key,
             node_id: self.config.node_id.clone(),
             random_number: self.random.gen_u64(),
+            ttl: 0,
+            acquired_at: 0,
         };
 
         loop {
             // If the lock has been acquired in the majority of servers, just return the lock.
-            if self.lock(&lock).await {
-                println!("aaaaaa locked",);
+            if self.lock(&mut lock).await {
+                println!("aaaaaa LOCK ACQUIRED lock={:?}", lock);
                 return lock;
             }
 
@@ -119,15 +130,20 @@ where
                 error!("unable to release acquired locks");
             }
 
-            // TODO: add jitter
-            self.r#async
-                .sleep(self.config.max_lock_retry_interval)
-                .await;
+            let duration = Duration::from_millis(
+                self.random
+                    .gen_in_range(0, self.config.max_lock_retry_interval.as_millis() as u64),
+            );
+            println!(
+                "aaaaaa client {} will sleep for {duration:?}",
+                self.config.node_id
+            );
+            self.r#async.sleep(duration).await;
         }
     }
 
     /// Tries to acquire a lock on at least the majority of servers.
-    async fn lock(&self, lock: &Lock) -> bool {
+    async fn lock(&self, lock: &mut Lock) -> bool {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(self.redis_servers.len());
 
         let mut futures = Vec::with_capacity(self.redis_servers.len());
@@ -142,8 +158,8 @@ where
             futures.push(
                 r#async.timeout(self.config.acquire_lock_timeout, async move {
                     if let Err(err) = redis_server.lock(&lock, lock_ttl).await {
-                        println!("aaaaaa redis_server.lock() returned Err",);
                         error!(?err, "error calling set_nx_px");
+                        return;
                     };
 
                     if let Err(err) = sender.send(true).await {
@@ -157,7 +173,6 @@ where
             );
         }
 
-        println!("aaaaaa will call async.spawn()",);
         self.r#async
             .spawn(async {
                 futures::future::join_all(futures).await;
@@ -166,10 +181,12 @@ where
 
         let start = self.clock.now();
 
-        println!("aaaaaa will call receiver.recv()",);
         let mut locks_acquired = 0;
+
+        // Drop the first sender that was created so receiver.recv() does not block forever
+        // because there's one Sender that has not been dropped.
+        drop(sender);
         while receiver.recv().await.is_some() {
-            println!("aaaaaa received",);
             locks_acquired += 1;
 
             if locks_acquired >= self.majority() {
@@ -181,12 +198,21 @@ where
 
                 // If we took too long to acquire the lock on
                 // the majority of servers, the lock is not valid.
-                return validity_time >= self.config.min_lock_validity.as_millis() as i64;
+                if validity_time < self.config.min_lock_validity.as_millis() as i64 {
+                    return false;
+                }
+
+                lock.ttl = validity_time as u64;
+                lock.acquired_at = start;
+
+                return true;
             }
         }
 
-        println!("aaaaaa lock() returning false",);
-
+        println!(
+            "aaaaaa client {} did not acquire lock, lock() returning false",
+            self.config.node_id
+        );
         false
     }
 
