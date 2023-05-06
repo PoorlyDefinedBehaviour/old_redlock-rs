@@ -101,10 +101,6 @@ impl<'a> Client<'a> {
 
         match &mut *state {
             State::Initial => {
-                println!(
-                    "aaaaaa client={} is in the initial state, will create future",
-                    self.config.id
-                );
                 let future: Pin<Box<dyn Future<Output = Lock> + 'a>> =
                     Box::pin(unsafe { (*s).redlock.retry_until_locked(key) });
 
@@ -114,22 +110,12 @@ impl<'a> Client<'a> {
             }
             State::AcquireLock { ref mut stepper } => {
                 if let Some(StepperOutput::Ready(lock)) = stepper.next().await {
-                    println!(
-                        "aaaaaa client={} is in the acquire lock state, acquired lock",
-                        self.config.id
-                    );
                     *state = State::LockAcquired { lock };
                 }
             }
             State::LockAcquired { lock } => {
                 if self.random.gen_bool(self.config.lock_release_chance) {
-                    println!(
-                        "aaaaaa client={} is in the lock acquired state and will release the lock",
-                        self.config.id
-                    );
-
                     if self.redlock.release(lock).await {
-                        println!("aaaaaa lock released lock={:?}", lock);
                         *state = State::Initial;
                     }
                 }

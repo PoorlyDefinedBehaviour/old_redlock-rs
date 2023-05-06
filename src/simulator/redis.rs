@@ -20,6 +20,7 @@ pub(crate) struct Redis {
     pub(crate) config: Config,
     random: Arc<dyn RandomGenerator>,
     clock: Arc<dyn Clock>,
+    r#async: Arc<r#async::Async>,
     /// The key value pairs.
     pub(crate) entries: Mutex<HashMap<String, Entry>>,
 }
@@ -38,6 +39,14 @@ pub(crate) struct Config {
     pub(crate) try_relase_lock_failure_chance: f64,
     /// The chance of an ack being lost.
     pub(crate) message_loss_chance: f64,
+    /// The minimum amount of time in ms that a call to lock() will take.
+    pub(crate) min_lock_delay: u64,
+    /// The maximum amount of time in ms that a call to lock() will take.
+    pub(crate) max_lock_delay: u64,
+    /// The minimum amount of time in ms that a call to release_lock() will take.
+    pub(crate) min_release_lock_delay: u64,
+    /// The maximum amount of time in ms that a call to release_lock() will take.
+    pub(crate) max_release_lock_delay: u64,
 }
 
 #[derive(Debug)]
@@ -58,6 +67,7 @@ impl Redis {
             config,
             clock,
             random,
+            r#async: Arc::clone(&r#async),
             entries: Mutex::new(HashMap::new()),
         });
 
@@ -81,6 +91,13 @@ impl Redis {
 #[async_trait]
 impl redis::Redis for Redis {
     async fn lock(&self, lock: &Lock, ttl: Duration) -> Result<()> {
+        // let duration = Duration::from_millis(
+        //     self.random
+        //         .gen_in_range(self.config.min_lock_delay, self.config.max_lock_delay),
+        // );
+
+        // self.r#async.sleep(duration).await;
+
         if self.random.gen_bool(self.config.lock_failure_chance) {
             bail!(
                 "simulated: redis_server={} redis server failed before trying to lock key",
@@ -117,6 +134,13 @@ impl redis::Redis for Redis {
     }
 
     async fn release_lock(&self, lock: &Lock) -> Result<()> {
+        // let duration = Duration::from_millis(self.random.gen_in_range(
+        //     self.config.min_release_lock_delay,
+        //     self.config.max_release_lock_delay,
+        // ));
+
+        // self.r#async.sleep(duration).await;
+
         if self
             .random
             .gen_bool(self.config.try_relase_lock_failure_chance)
@@ -130,11 +154,6 @@ impl redis::Redis for Redis {
         let mut entries = self.entries.lock().await;
 
         if let Some(entry) = entries.get(&lock.key) {
-            println!(
-                "aaaaaa redis_server={} release_lock entry.value == lock.value() {:?}",
-                self.config.id,
-                entry.value == lock.value()
-            );
             if entry.value == lock.value() {
                 entries.remove(&lock.key);
             }

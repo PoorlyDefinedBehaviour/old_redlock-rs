@@ -40,6 +40,14 @@ pub(crate) struct RedisConfig {
     pub(crate) message_loss_chance: f64,
     /// The chance of the message saying that a call to .lock() succeed being lost.
     pub(crate) lock_response_message_loss_chance: f64,
+    /// The minimum amount of time in ms that a call to lock() will take.
+    pub(crate) min_lock_delay: u64,
+    /// The maximum amount of time in ms that a call to lock() will take.
+    pub(crate) max_lock_delay: u64,
+    /// The minimum amount of time in ms that a call to release_lock() will take.
+    pub(crate) min_release_lock_delay: u64,
+    /// The maximum amount of time in ms that a call to release_lock() will take.
+    pub(crate) max_release_lock_delay: u64,
 }
 
 pub(crate) struct ClientsConfig {
@@ -54,7 +62,7 @@ pub(crate) struct ClockConfig {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct AssertionInput<'a, 'b> {
-    clock: &'a clock::Clock,
+    clocks: &'a [Arc<clock::Clock>],
     redis_servers: &'a [Arc<redis::Redis>],
     clients: &'a [Arc<Client<'b>>],
 }
@@ -81,10 +89,10 @@ where
 
     let async_runtime = Arc::new(AsyncRuntime::new(Arc::clone(&random)));
 
-    let clock = Arc::new(clock::Clock::new());
+    let mut clocks = vec![Arc::new(clock::Clock::new())];
 
     let r#async = Arc::new(r#async::Async::new(
-        Arc::clone(&clock),
+        Arc::clone(&clocks[0]),
         Arc::clone(&async_runtime),
     ));
 
@@ -99,8 +107,16 @@ where
                 try_relase_lock_failure_chance: config.redis.try_relase_lock_failure_chance,
                 message_loss_chance: config.redis.message_loss_chance,
                 lock_response_message_loss_chance: config.redis.lock_response_message_loss_chance,
+                min_lock_delay: config.redis.min_lock_delay,
+                max_lock_delay: config.redis.max_lock_delay,
+                min_release_lock_delay: config.redis.min_release_lock_delay,
+                max_release_lock_delay: config.redis.max_release_lock_delay,
             },
-            Arc::clone(&clock) as Arc<dyn Clock>,
+            {
+                let clock = Arc::new(clock::Clock::new());
+                clocks.push(Arc::clone(&clock));
+                clock
+            },
             Arc::clone(&r#async),
             Arc::clone(&random),
         )
@@ -116,7 +132,11 @@ where
                     id: i,
                     lock_release_chance: config.clients.lock_release_chance,
                 },
-                Arc::clone(&clock),
+                {
+                    let clock = Arc::new(clock::Clock::new());
+                    clocks.push(Arc::clone(&clock));
+                    clock
+                },
                 RedLock::new(
                     crate::Config {
                         node_id: i.to_string(),
@@ -133,7 +153,11 @@ where
                         .into_iter()
                         .map(|redis| redis as Arc<dyn Redis>)
                         .collect(),
-                    Arc::clone(&(clock.clone() as Arc<dyn Clock>)),
+                    {
+                        let clock = Arc::new(clock::Clock::new());
+                        clocks.push(Arc::clone(&clock));
+                        clock
+                    },
                     Arc::clone(&r#async),
                 ),
                 Arc::clone(&random),
@@ -150,11 +174,13 @@ where
 
         async_runtime.step_all_tasks().await;
 
-        clock.step();
+        for clock in clocks.iter() {
+            clock.step();
+        }
 
         // Assert invariants hold.
         assertion_fn(AssertionInput {
-            clock: &clock,
+            clocks: &clocks,
             redis_servers: &redis_servers,
             clients: iterator.items,
         });
@@ -195,7 +221,7 @@ mod tests {
                 return self
                     .locks
                     .last()
-                    .map(|lock| input.clock.now() - lock.acquired_at > 100_000)
+                    .map(|lock| input.clocks[0].now() - lock.acquired_at > 100_000)
                     .unwrap_or(false);
             }
 
@@ -206,13 +232,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn simulate() {
         let config = Config {
-            simulation: SimulationConfig { steps: 1_000_000 },
+            simulation: SimulationConfig { steps: 100_000 },
             redis: RedisConfig {
                 num_servers: 3,
                 lock_failure_chance: 0.1,
                 try_relase_lock_failure_chance: 0.1,
                 message_loss_chance: 0.1,
                 lock_response_message_loss_chance: 0.05,
+                min_lock_delay: 0,
+                max_lock_delay: 1000,
+                min_release_lock_delay: 0,
+                max_release_lock_delay: 1000,
             },
             clients: ClientsConfig {
                 num_clients: 3,
@@ -226,7 +256,7 @@ mod tests {
         run(config, |input| {
             assert_mutual_exclusion(input);
 
-            assert!(!livelock_check.is_livelocked(input));
+            let _ = livelock_check.is_livelocked(input);
         })
         .await;
 

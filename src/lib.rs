@@ -134,10 +134,7 @@ where
                 self.random
                     .gen_in_range(0, self.config.max_lock_retry_interval.as_millis() as u64),
             );
-            println!(
-                "aaaaaa client {} will sleep for {duration:?}",
-                self.config.node_id
-            );
+
             self.r#async.sleep(duration).await;
         }
     }
@@ -154,13 +151,16 @@ where
             let lock = lock.clone();
             let lock_ttl = self.config.lock_ttl;
             let r#async = Arc::clone(&self.r#async);
+            let node_id = self.config.node_id.clone();
 
             futures.push(
                 r#async.timeout(self.config.acquire_lock_timeout, async move {
+                    println!("aaaaaa client={} will call redis_server.lock()", node_id);
                     if let Err(err) = redis_server.lock(&lock, lock_ttl).await {
                         error!(?err, "error calling set_nx_px");
                         return;
                     };
+                    println!("aaaaaa client={} redis_server.lock() returned", node_id);
 
                     if let Err(err) = sender.send(true).await {
                         error!(
@@ -199,6 +199,7 @@ where
                 // If we took too long to acquire the lock on
                 // the majority of servers, the lock is not valid.
                 if validity_time < self.config.min_lock_validity.as_millis() as i64 {
+                    println!("aaaaaa client={} acquire lock on majority but the lock is too old to be valid", self.config.node_id);
                     return false;
                 }
 
