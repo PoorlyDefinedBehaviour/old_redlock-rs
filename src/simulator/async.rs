@@ -16,6 +16,8 @@ use crate::random::RandomGenerator;
 use super::clock;
 use super::shuffle_iterator::ShuffleIterator;
 
+/// The async runtime used for simulations.
+/// Provides utilities like future based sleeping and timeouts.
 pub(crate) struct AsyncRuntime {
     random: Arc<dyn RandomGenerator>,
     /// Futures that the runtime needs to execute.
@@ -82,12 +84,12 @@ impl AsyncRuntime {
 /// Provides async utilities that can be used during the simulation.
 #[derive(Debug)]
 pub(crate) struct Async {
-    clock: Arc<clock::Clock>,
+    clock: Arc<clock::SimulatorClock>,
     runtime: Arc<AsyncRuntime>,
 }
 
 impl Async {
-    pub(crate) fn new(clock: Arc<clock::Clock>, runtime: Arc<AsyncRuntime>) -> Self {
+    pub(crate) fn new(clock: Arc<clock::SimulatorClock>, runtime: Arc<AsyncRuntime>) -> Self {
         Self { clock, runtime }
     }
 }
@@ -98,7 +100,7 @@ pub(crate) struct Sleep {
     /// How long to sleep for.
     duration: Duration,
     /// Can be used to get the time.
-    clock: Arc<clock::Clock>,
+    clock: Arc<clock::SimulatorClock>,
 }
 
 impl Future for Sleep {

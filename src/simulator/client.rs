@@ -60,7 +60,7 @@ impl<'a> std::fmt::Debug for State<'a> {
 impl<'a> Client<'a> {
     pub(crate) fn new(
         config: Config,
-        clock: Arc<clock::Clock>,
+        clock: Arc<clock::SimulatorClock>,
         redlock: RedLock<Async>,
         random: Arc<dyn RandomGenerator>,
     ) -> Self {

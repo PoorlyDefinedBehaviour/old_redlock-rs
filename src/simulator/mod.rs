@@ -13,6 +13,8 @@ use self::{client::Client, r#async::AsyncRuntime, shuffle_iterator::ShuffleItera
 mod r#async;
 mod client;
 mod clock;
+mod message_bus;
+mod network;
 mod redis;
 mod shuffle_iterator;
 
@@ -62,7 +64,7 @@ pub(crate) struct ClockConfig {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct AssertionInput<'a, 'b> {
-    clocks: &'a [Arc<clock::Clock>],
+    clocks: &'a [Arc<clock::SimulatorClock>],
     redis_servers: &'a [Arc<redis::Redis>],
     clients: &'a [Arc<Client<'b>>],
 }
@@ -89,7 +91,7 @@ where
 
     let async_runtime = Arc::new(AsyncRuntime::new(Arc::clone(&random)));
 
-    let mut clocks = vec![Arc::new(clock::Clock::new())];
+    let mut clocks = vec![Arc::new(clock::SimulatorClock::new())];
 
     let r#async = Arc::new(r#async::Async::new(
         Arc::clone(&clocks[0]),
@@ -113,7 +115,7 @@ where
                 max_release_lock_delay: config.redis.max_release_lock_delay,
             },
             {
-                let clock = Arc::new(clock::Clock::new());
+                let clock = Arc::new(clock::SimulatorClock::new());
                 clocks.push(Arc::clone(&clock));
                 clock
             },
@@ -133,7 +135,7 @@ where
                     lock_release_chance: config.clients.lock_release_chance,
                 },
                 {
-                    let clock = Arc::new(clock::Clock::new());
+                    let clock = Arc::new(clock::SimulatorClock::new());
                     clocks.push(Arc::clone(&clock));
                     clock
                 },
@@ -154,13 +156,14 @@ where
                         .map(|redis| redis as Arc<dyn Redis>)
                         .collect(),
                     {
-                        let clock = Arc::new(clock::Clock::new());
+                        let clock = Arc::new(clock::SimulatorClock::new());
                         clocks.push(Arc::clone(&clock));
                         clock
                     },
                     Arc::clone(&r#async),
                 ),
                 Arc::clone(&random),
+                returnself.is_lock_acquired,
             ))
         })
         .collect();
@@ -229,7 +232,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn simulate() {
         let config = Config {
             simulation: SimulationConfig { steps: 100_000 },

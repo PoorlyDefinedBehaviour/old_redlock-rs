@@ -91,12 +91,12 @@ impl Redis {
 #[async_trait]
 impl redis::Redis for Redis {
     async fn lock(&self, lock: &Lock, ttl: Duration) -> Result<()> {
-        // let duration = Duration::from_millis(
-        //     self.random
-        //         .gen_in_range(self.config.min_lock_delay, self.config.max_lock_delay),
-        // );
+        let duration = Duration::from_millis(
+            self.random
+                .gen_in_range(self.config.min_lock_delay, self.config.max_lock_delay),
+        );
 
-        // self.r#async.sleep(duration).await;
+        self.r#async.sleep(duration).await;
 
         if self.random.gen_bool(self.config.lock_failure_chance) {
             bail!(
@@ -134,12 +134,12 @@ impl redis::Redis for Redis {
     }
 
     async fn release_lock(&self, lock: &Lock) -> Result<()> {
-        // let duration = Duration::from_millis(self.random.gen_in_range(
-        //     self.config.min_release_lock_delay,
-        //     self.config.max_release_lock_delay,
-        // ));
+        let duration = Duration::from_millis(self.random.gen_in_range(
+            self.config.min_release_lock_delay,
+            self.config.max_release_lock_delay,
+        ));
 
-        // self.r#async.sleep(duration).await;
+        self.r#async.sleep(duration).await;
 
         if self
             .random

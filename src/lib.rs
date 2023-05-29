@@ -165,8 +165,7 @@ where
                     if let Err(err) = sender.send(true).await {
                         error!(
                             ?err,
-                            redis_server = redis_server.address(),
-                            "acquire lock on redis server but got error sending signal to channel"
+                            "acquired lock on redis server but got error sending signal to channel"
                         );
                     };
                 }),

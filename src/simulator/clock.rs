@@ -2,11 +2,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A fake clock that can be used in simulations.
 #[derive(Debug)]
-pub(crate) struct Clock {
+pub(crate) struct SimulatorClock {
     time: AtomicU64,
 }
 
-impl Clock {
+impl SimulatorClock {
     pub(crate) fn new() -> Self {
         Self {
             time: AtomicU64::new(0),
@@ -19,7 +19,7 @@ impl Clock {
     }
 }
 
-impl crate::Clock for Clock {
+impl crate::Clock for SimulatorClock {
     fn now(&self) -> u64 {
         self.time.load(Ordering::SeqCst)
     }
